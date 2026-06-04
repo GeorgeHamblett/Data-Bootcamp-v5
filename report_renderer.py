@@ -289,8 +289,7 @@ def _normalise_currency_spacing(text: str) -> str:
 
 
 def _remove_repeated_comma_terms(text: str) -> str:
-    normalised = _normalise_currency_spacing(text)
-    parts = [p.strip() for p in re.split(r";|,(?!\s*\d{3}\b)", normalised) if p.strip()]
+    parts = [p.strip() for p in re.split(r",|;", text) if p.strip()]
     if len(parts) <= 1:
         return normalised
 
@@ -306,7 +305,7 @@ def _remove_repeated_comma_terms(text: str) -> str:
     if len(deduped) == 1:
         return deduped[0]
 
-    return _normalise_currency_spacing(", ".join(deduped))
+    return ", ".join(deduped)
 
 
 SUMMARY_VALUE_LABELS = (
@@ -340,9 +339,8 @@ def clean_display_value(value: Any, max_chars: int = 180) -> str:
         return NOT_EXPLICITLY_STATED
 
     text = re.sub(r"\s+", " ", text)
-    text = re.sub(r"\b1\s+work packages\b", "1 work package", text, flags=re.I)
     text = _remove_label_prefix(text, SUMMARY_VALUE_LABELS)
-    text = _normalise_currency_spacing(text)
+    text = re.sub(r"£\s*(\d{1,3})\s*/\s*(\d{3})\b", r"£\1,\2", text)
     text = re.sub(r"^(First|Second|Third|Finally),\s+", "", text, flags=re.I)
     text = text.replace(" will be randomised 2:1 to intervent", "")
     text = text.replace(" to intervent", "")
@@ -526,53 +524,6 @@ def _concise_outcome_list(values: list[Any], limit: int = 12) -> list[str]:
     return outcomes[:limit]
 
 
-
-def clean_comparator_value(value: Any) -> str:
-    """Strip comparator labels and sentence prefixes before rendering."""
-    text = _remove_label_prefix(value, ("comparator or control", "comparator", "control"))
-    text = re.sub(r"^(?:the\s+)?comparator\s+is\s+", "", text, flags=re.I).strip()
-    return clean_display_value(text)
-
-
-def _normalise_evidence_key(text: str) -> str:
-    return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
-
-
-def clean_summary_evidence(value: Any, max_words: int = 35) -> str:
-    """Return concise, de-duplicated evidence for Summary tab evidence fields."""
-    cleaned = clean_table_evidence(value, max_words=max_words)
-    if cleaned == NOT_EXPLICITLY_STATED:
-        return cleaned
-
-    raw_parts = [p.strip(" .;:") for p in re.split(r"(?<=[.!?])\s+|;", cleaned) if p.strip(" .;:")]
-    if not raw_parts:
-        raw_parts = [cleaned.strip(" .;:")]
-
-    parts: list[str] = []
-    seen: set[str] = set()
-    phrase_seen: set[str] = set()
-    for part in raw_parts:
-        phrases = [p.strip() for p in re.split(r",(?!\s*\d{3}\b)", part) if p.strip()]
-        deduped_phrases: list[str] = []
-        for phrase in phrases:
-            if re.search(r"\b(?:third|fourth|another)\s+sentence\b|should not be needed", phrase, re.I):
-                continue
-            key = _normalise_evidence_key(phrase)
-            if key and key not in phrase_seen:
-                phrase_seen.add(key)
-                deduped_phrases.append(phrase)
-        part = ", ".join(deduped_phrases)
-        key = _normalise_evidence_key(part)
-        if key and key not in seen:
-            seen.add(key)
-            parts.append(part)
-        if len(parts) >= 2:
-            break
-
-    if not parts:
-        return NOT_EXPLICITLY_STATED
-    return sentence_safe_trim("; ".join(parts), max_chars=max(120, max_words * 8))
-
 def _join_as_sentence(values: list[str], prefix: str = "") -> str:
     cleaned = [clean_display_value(value, max_chars=120).rstrip(" .") for value in values if _present(value)]
     cleaned = [value for value in cleaned if value and value != NOT_EXPLICITLY_STATED]
@@ -719,7 +670,7 @@ def render_main_case_summary(
 
     study_design = _compress(_get(facts, "study_design"), "design") or _safe(_get(facts, "study_design"))
     sample_size = _safe(_get(facts, "sample_size"))
-    comparator = clean_comparator_value(_get(facts, "comparator_or_control"))
+    comparator = _safe(_remove_label_prefix(_get(facts, "comparator_or_control"), ("comparator or control", "comparator", "control")))
     trl = _safe(_get(facts, "trl_evidence"))
     duration = _safe(_get(facts, "duration_months"))
     duration_text = f"{duration} months" if duration.isdigit() else duration

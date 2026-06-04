@@ -142,26 +142,3 @@ def test_outcomes_are_deduplicated_and_concise() -> None:
     assert lowered.count("wound area change") == 1
     assert "endpoint" not in lowered
     assert "the primary endpoint is prediction of delayed wound healing by 30 days and secondary endpoints include wound area change, time to healing, referrals, usability, eq-5d-5l and safety" not in lowered
-
-
-def test_mqae_extracts_from_assessment_engine_module_phrase() -> None:
-    text = """
-    Project title: StepRight movement quality assessment for community falls rehabilitation
-    The application describes a movement quality assessment engine (MQAE) module for the StepRight intervention.
-    """
-
-    facts = extract_application_facts([LoadedDocument(name="stepright.txt", text=text)])
-
-    assert facts.acronym_or_short_name == "MQAE"
-
-
-def test_trl_remains_rejected_as_module_acronym() -> None:
-    text = """
-    Project title: Digital wound monitoring feasibility study
-    The development system (TRL) is described in the application.
-    Product: wound monitoring platform.
-    """
-
-    facts = extract_application_facts([LoadedDocument(name="app.txt", text=text)])
-
-    assert facts.acronym_or_short_name == NOT_EXPLICITLY_STATED

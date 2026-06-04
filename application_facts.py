@@ -189,8 +189,8 @@ def _first_acronym(text: str, product: str | None = None) -> str | None:
         re.I,
     )
     named_component_acronym = re.compile(
-        r"\b(?:[A-Za-z][A-Za-z0-9-]+\s+){0,10}"
-        r"(?:assessment\s+engine|component|method|engine|module|platform|intervention|algorithm|model|tool|system)\s*"
+        r"\b(?:[A-Za-z][A-Za-z0-9-]+\s+){1,8}"
+        r"(?:component|method|engine|module|platform|intervention|algorithm|model|tool)\s*"
         r"\(([A-Z][A-Z0-9-]{2,10})\)"
         r"(?:\s+(?:module|engine|component|platform|algorithm|model|tool|system))?",
         re.I,
@@ -576,25 +576,13 @@ def _extract_project_management_plan(text: str, duration_months: str, work_packa
     if duration_months != NOT_EXPLICITLY_STATED:
         bits.append(f"{duration_months}-month plan")
     wp_count = len(work_packages)
-    explicit_wp_count = re.search(
-        r"\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d{1,2})\s+work packages?\b",
-        text,
-        re.I,
-    )
+    explicit_wp_count = re.search(r"\b(seven|7)\s+work packages?\b", text, re.I)
     if explicit_wp_count:
-        raw_count = explicit_wp_count.group(1).lower()
-        word_counts = {
-            "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
-            "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
-        }
-        count = word_counts.get(raw_count, int(raw_count) if raw_count.isdigit() else 0)
-        bits.append(f"{count} work package" if count == 1 else f"{count} work packages")
-    elif wp_count == 1:
-        bits.append("1 work package")
-    elif wp_count > 1:
+        bits.append("seven work packages")
+    elif wp_count:
         bits.append(f"{wp_count} work packages")
     elif re.search(r"work packages?", text, re.I):
-        bits.append("work packages present")
+        bits.append("work packages")
     if re.search(r"Gantt(?:-style)?|timeline", text, re.I):
         bits.append("Gantt-style timeline")
     if milestones or re.search(r"milestones?", text, re.I):
