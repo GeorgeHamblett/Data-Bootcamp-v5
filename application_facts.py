@@ -32,7 +32,7 @@ FIELD_PATTERNS = {
     "technology_type": [r"(?:technology\s+type|intervention\s+type)\s*[:\-]\s*(.+)"],
     "study_design": [r"(?:study\s+design|design)\s*[:\-]\s*(.+)"],
     "sites_or_setting": [r"(?:sites?|setting)\s*[:\-]\s*(.+)"],
-    "project_title": [r"(?:project\s+title|application\s+title|title)\s*[:\-]\s*(.+)"],
+    "project_title": [r"(?:project\s+title|application\s+title|proposal\s+title|title)\s*[:\-]\s*(.+)"],
     "application_claimed_call": [r"(?:funding\s+call|funding\s+opportunity|claimed\s+call|programme)\s*[:\-]\s*(.+)"],
     "applicant_or_lead": [r"(?:lead\s+applicant|chief\s+investigator|principal\s+investigator|applicant\s+lead)\s*[:\-]\s*(.+)"],
     "contracting_organisation": [r"(?:contracting\s+organisation|contracting\s+organization|host\s+organisation|sponsor)\s*[:\-]\s*(.+)"],
@@ -48,8 +48,13 @@ PRODUCT_PATTERNS = [
 
 ACRONYM_PATTERNS = [
     r"\(([A-Z][A-Z0-9\-]{2,10})\)",
-    r"(?:abbreviated as|short name|acronym|module called|or)\s+([A-Z][A-Z0-9\-]{2,10})\b",
+    r"(?:abbreviated as|short name|acronym|module called)\s+([A-Z][A-Z0-9\-]{2,10})\b",
 ]
+
+GENERIC_ACRONYMS = {
+    "TRL", "NHS", "NIHR", "PPI", "PPIE", "QALY", "UKCA", "DTAC",
+    "IRAS", "ISO", "IEC", "RAG", "JSON", "AI", "ML", "API",
+}
 
 KEYWORDS = {
     "population": [r"aged\s+\d+\s+(?:and\s+over|or\s+over|\+)", r"older adults?", r"children with", r"patients with", r"adults with", r"service users with", r"people with"],
@@ -65,7 +70,7 @@ KEYWORDS = {
 }
 
 ENDPOINT_RE = re.compile(
-    r"\b(?:Berg Balance Scale|Timed Up and Go|Activities-specific Balance Confidence(?: scale)?|EQ-5D-5L|EQ-5D|SUS|PSSUQ|recruitment|retention|adherence|fidelity|interviews?|primary outcome|secondary outcome|endpoint)\b",
+    r"\b(?:Berg Balance Scale|Timed Up and Go|Activities-specific Balance Confidence(?: scale)?|EQ-5D-5L|EQ-5D|SUS|PSSUQ|prediction of delayed wound healing by 30 days|wound area change|time to healing|referrals|usability|safety|recruitment|retention|adherence|fidelity|interviews?|primary outcome|secondary outcome|primary endpoint|secondary endpoint|endpoints?|outcomes?)\b",
     re.I,
 )
 
@@ -156,19 +161,38 @@ def _first_matching_product(text: str) -> str | None:
     return None
 
 
+def _is_generic_acronym(candidate: str) -> bool:
+    text = candidate.strip().upper()
+    first_token = re.split(r"\s+|[:;,.()\-/]", text)[0] if text else ""
+    return text in GENERIC_ACRONYMS or first_token in GENERIC_ACRONYMS
+
+
 def _first_acronym(text: str, product: str | None = None) -> str | None:
     if product:
         lead = re.match(r"([A-Z][A-Za-z0-9]+(?:[-–][A-Z0-9][A-Za-z0-9]*)+)", product)
-        if lead:
+        if lead and not _is_generic_acronym(lead.group(1)):
             return lead.group(1)
-    for pattern in ACRONYM_PATTERNS:
-        for match in re.finditer(pattern, text):
-            candidate = match.group(1).strip()
-            if candidate in {"NHS", "NIHR", "PPI", "PPIE", "QALY", "UKCA", "DTAC", "IRAS", "ISO", "IEC"}:
-                continue
-            return candidate
-    return None
 
+    labelled = _find_first(text, FIELD_PATTERNS["acronym_or_short_name"])
+    if labelled:
+        match = re.search(r"\b([A-Z][A-Z0-9\-]{2,10})\b", labelled[0])
+        if match and not _is_generic_acronym(match.group(1)):
+            return match.group(1)
+
+    component_context = re.compile(
+        r"\b(?:product|intervention|engine|component|module|platform|system|device|software|tool)\b",
+        re.I,
+    )
+    for sentence in _sentences(text):
+        if not component_context.search(sentence):
+            continue
+        for pattern in ACRONYM_PATTERNS:
+            for match in re.finditer(pattern, sentence):
+                candidate = match.group(1).strip().upper()
+                if _is_generic_acronym(candidate):
+                    continue
+                return candidate
+    return None
 
 def _extract_sample_size(text: str) -> str:
     labelled = re.search(
@@ -464,18 +488,40 @@ def _extract_milestones(text: str) -> list[str]:
     return milestones[:20]
 
 
+GENERIC_OUTCOME_LABELS = {"endpoint", "endpoints", "primary endpoint", "secondary endpoint", "outcome", "outcomes", "primary outcome", "secondary outcome"}
+
+
+def _clean_outcome_candidate(value: str) -> str:
+    cleaned = _short(value, 220)
+    cleaned = re.sub(r"^(?:primary|secondary)\s+(?:endpoint|outcome)s?\s*[:\-]\s*", "", cleaned, flags=re.I)
+    cleaned = re.sub(r"^(?:endpoint|outcome)s?\s*(?:include|are|:|-)\s*", "", cleaned, flags=re.I)
+    return _short(cleaned, 220)
+
+
 def _extract_endpoints(text: str) -> list[str]:
     endpoints: list[str] = []
-    for match in ENDPOINT_RE.finditer(text):
-        value = match.group(0)
-        canonical = value if value.isupper() else value.strip()
-        if canonical not in endpoints:
-            endpoints.append(canonical)
-    for sentence in _sentences_with(text, [r"endpoint", r"outcome measure", r"primary outcome", r"secondary outcome"], 8, 220):
-        if sentence not in endpoints:
-            endpoints.append(sentence)
-    return endpoints[:20]
+    seen: set[str] = set()
 
+    def add(value: str) -> None:
+        cleaned = _clean_outcome_candidate(value)
+        key = cleaned.lower().strip(" .;:")
+        if not key or key in GENERIC_OUTCOME_LABELS:
+            return
+        if key not in seen:
+            seen.add(key)
+            endpoints.append(cleaned)
+
+    for match in ENDPOINT_RE.finditer(text):
+        add(match.group(0))
+
+    for sentence in _sentences_with(text, [r"endpoint", r"outcome measure", r"primary outcome", r"secondary outcome", r"primary endpoint", r"secondary endpoint"], 8, 220):
+        cleaned = _clean_outcome_candidate(sentence)
+        if cleaned.lower().strip(" .;:") in GENERIC_OUTCOME_LABELS:
+            continue
+        # Prefer enumerated measures over bare labels, but keep meaningful complete phrases.
+        if re.search(r"\b(?:Berg Balance Scale|Timed Up and Go|EQ-5D-5L|EQ-5D|wound area change|time to healing|referrals|usability|safety|prediction of delayed wound healing by 30 days)\b", cleaned, re.I):
+            add(cleaned)
+    return endpoints[:20]
 
 def _extract_market_or_impact(text: str) -> str | None:
     patterns = [r"market and adoption", r"IP and commercialisation", r"knowledge mobilisation", r"dissemination and impact", r"commissioner", r"commercialisation"]
@@ -526,6 +572,38 @@ def _add_evidence(evidence: list[dict[str, str]], field: str, quote: str, docs: 
     evidence.append({"source_document": source, "section_or_context": field, "quote": _short(quote, 220), "why_it_matters": f"Supports {field.replace('_', ' ')}."})
 
 
+def _is_valid_project_title(candidate: str) -> bool:
+    """Return True only for explicit or clearly title-like project titles."""
+    cleaned = _short(candidate or "", 180).strip(" \"'“”")
+    words = cleaned.split()
+    if not cleaned or cleaned == NOT_EXPLICITLY_STATED:
+        return False
+    if len(cleaned) > 140:
+        return False
+    if _is_noise(cleaned):
+        return False
+    if re.match(r"^(?:Month|WP\s*\d*|Work package|Milestone|Output|Appendix|Gantt)\b", cleaned, re.I):
+        return False
+    if re.search(r"governance confirmed|final analysis|commercial plan|\bcomplete\b|dissemination|work package|month start|month end", cleaned, re.I):
+        return False
+    if re.search(r"SYNTHETIC|TRAINING|DUMMY|FICTIONAL|EXEMPLAR|HIGH-SIMILARITY TEST", cleaned, re.I):
+        return False
+    if re.match(r"^(?:Summary|Background|Project management|Gantt(?:/workplan)?|Workplan|Endpoints?)$", cleaned, re.I):
+        return False
+    if re.match(r"^(?:This project will|The project will|This proposal|We will)\b", cleaned, re.I):
+        return False
+    if DANGLING_TERMINAL_WORDS_RE.search(cleaned):
+        return False
+    alpha_words = [w for w in words if re.search(r"[A-Za-z]", w)]
+    if alpha_words and cleaned.upper() == cleaned:
+        # Accept acronym-containing titles only if they include enough descriptive words; reject generic banners/labels.
+        if len(alpha_words) <= 5 or re.search(r"(?:PROPOSAL|APPLICATION|SUMMARY|BACKGROUND|ENDPOINTS?|WORKPLAN|GANTT|PROJECT MANAGEMENT)$", cleaned, re.I):
+            return False
+    if len(words) < 2:
+        return False
+    return True
+
+
 def _is_narrative_title_candidate(candidate: str) -> bool:
     return bool(
         re.match(
@@ -538,24 +616,20 @@ def _is_narrative_title_candidate(candidate: str) -> bool:
 def _valid_labelled_project_title(candidate: str) -> bool:
     """Accept clear labelled titles while rejecting narrative descriptions."""
     cleaned = _short(candidate, 160).strip(" \"'“”")
-    words = cleaned.split()
     return bool(
-        cleaned
-        and not _is_noise(cleaned)
-        and 2 <= len(words) <= 20
-        and len(cleaned) <= 160
+        _is_valid_project_title(cleaned)
         and not _is_narrative_title_candidate(cleaned)
-        and not re.search(r"(?i)funding call|lead applicant|partners? include|sample size|target population|study design|duration|abstract|summary", cleaned)
+        and not re.search(r"(?i)funding call|lead applicant|partners? include|sample size|target population|study design|duration|abstract", cleaned)
     )
 
 
 def _looks_like_project_title(candidate: str) -> bool:
-    """Return True for generic title-like leading lines, not narrative sentences."""
+    """Return True for generic title-like leading lines, not narrative sentences/headings."""
     cleaned = _short(candidate, 140).strip(" \"'“”")
-    if not cleaned or _is_noise(cleaned):
+    if not _is_valid_project_title(cleaned):
         return False
     words = cleaned.split()
-    if not 3 <= len(words) <= 18 or len(cleaned) > 140:
+    if not 3 <= len(words) <= 18:
         return False
     if cleaned.endswith(('.', '?', '!')):
         return False
@@ -566,7 +640,7 @@ def _looks_like_project_title(candidate: str) -> bool:
     if re.search(r"\s[:–-]\s", cleaned):
         return True
     titlecase_words = sum(1 for word in words if re.match(r"[A-Z][A-Za-z0-9-]+$", word))
-    has_acronym = any(re.match(r"[A-Z0-9-]{3,}$", word.strip("():")) for word in words)
+    has_acronym = any(re.match(r"[A-Z0-9-]{3,}$", word.strip("():")) and not _is_generic_acronym(word.strip("():")) for word in words)
     return has_acronym or titlecase_words >= max(2, len(words) // 2)
 
 
@@ -584,7 +658,6 @@ def _fallback_project_title(text: str) -> str | None:
 def _extract_project_title(text: str) -> str | None:
     """Extract a project title from application text using explicit labels or title-like leading lines."""
     return _fallback_project_title(text)
-
 
 def _extract_claimed_call(text: str) -> str | None:
     """Extract the funding call claimed in the application text."""
@@ -651,6 +724,11 @@ def extract_application_facts(documents: Iterable[LoadedDocument]) -> Applicatio
     if acronym:
         facts.acronym_or_short_name = acronym
         _add_evidence(evidence_entries, "acronym_or_short_name", acronym, docs)
+    elif _is_generic_acronym(str(facts.acronym_or_short_name)):
+        facts.acronym_or_short_name = NOT_EXPLICITLY_STATED
+
+    if not _is_valid_project_title(facts.project_title):
+        facts.project_title = NOT_EXPLICITLY_STATED
 
     current, target, trl_evidence, contradictions = _extract_trl(combined)
     facts.current_trl_or_stage = current
