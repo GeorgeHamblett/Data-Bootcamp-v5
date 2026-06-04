@@ -114,3 +114,31 @@ def test_main_outcomes_do_not_contain_standalone_endpoint() -> None:
 
     assert "endpoint" not in {outcome.lower() for outcome in facts.endpoints}
     assert "wound area change" in {outcome.lower() for outcome in facts.endpoints}
+
+
+def test_synthetic_test_wording_is_not_ppie_evidence() -> None:
+    text = """
+    Project title: Digital wound monitoring feasibility study
+    The proposal is intentionally near-overlapping to test novelty and similarity detection as PPIE evidence with public contributors.
+    Study design: feasibility study.
+    """
+
+    facts = extract_application_facts([LoadedDocument(name="app.txt", text=text)])
+
+    assert facts.ppie_plan == NOT_EXPLICITLY_STATED
+
+
+def test_outcomes_are_deduplicated_and_concise() -> None:
+    text = """
+    Project title: Woubot feasibility study
+    Primary endpoint: prediction of delayed wound healing by 30 days.
+    Secondary endpoints include wound area change, wound area change, time to healing, referrals, nurse documentation time, usability, EQ-5D-5L and safety.
+    The primary endpoint is prediction of delayed wound healing by 30 days and secondary endpoints include wound area change, time to healing, referrals, usability, EQ-5D-5L and safety.
+    """
+
+    facts = extract_application_facts([LoadedDocument(name="app.txt", text=text)])
+    lowered = [item.lower() for item in facts.endpoints]
+
+    assert lowered.count("wound area change") == 1
+    assert "endpoint" not in lowered
+    assert "the primary endpoint is prediction of delayed wound healing by 30 days and secondary endpoints include wound area change, time to healing, referrals, usability, eq-5d-5l and safety" not in lowered
