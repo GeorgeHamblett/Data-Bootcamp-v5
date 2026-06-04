@@ -316,6 +316,9 @@ SUMMARY_VALUE_LABELS = (
     "Health economics",
     "Regulatory plan",
     "Project management",
+    "PPIE leadership evidence",
+    "PPIE evidence",
+    "PPIE",
     "Budget and Finance",
     "Finance evidence",
 )
@@ -1198,6 +1201,27 @@ def clean_table_evidence(
 def clean_summary_evidence(value: Any, max_words: int = 35) -> str:
     """Clean summary evidence with the same adviser-facing safeguards as table evidence."""
     return clean_table_evidence(value, max_words=max_words)
+
+
+def _normalise_evidence_key(value: Any) -> str:
+    """Return a stable comparison key for cleaned evidence snippets.
+
+    Summary fields can be cleaned with different word limits before they are
+    compared. Normalising punctuation, labels and case here prevents duplicate
+    snippets from being rendered twice when only casing or terminal punctuation
+    differs.
+    """
+    if not _present(value):
+        return ""
+
+    text = str(value).strip()
+    if text == NOT_EXPLICITLY_STATED:
+        return ""
+
+    text = _remove_label_prefix(text, SUMMARY_VALUE_LABELS)
+    text = normalise_punctuation(text).lower()
+    text = re.sub(r"[^a-z0-9£]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def checklist_table_rows(items: list[ChecklistItem]) -> list[dict[str, Any]]:
