@@ -54,6 +54,7 @@ def clean_markdown_output(markdown: str) -> str:
 
     # Remove accidental large blank sections and adviser-facing ellipses/double punctuation.
     text = re.sub(r"\n{3,}", "\n\n", text)
+    text = _normalise_currency_spacing(text)
     text = text.replace("…", ".")
     text = re.sub(r"\.{2,}", ".", text)
     text = re.sub(r"。+\.", "。", text)
@@ -154,6 +155,28 @@ def _remove_label_prefix(value: Any, labels: tuple[str, ...]) -> str:
     return text
 
 
+def _clean_comparator(value: Any) -> str:
+    text = _strip_terminal_punctuation(value)
+    patterns = (
+        r"comparator\s+or\s+control",
+        r"the\s+comparator\s+is",
+        r"comparator\s+is",
+        r"comparator",
+        r"the\s+control\s+is",
+        r"control\s+is",
+        r"control",
+    )
+    changed = True
+    while changed:
+        changed = False
+        for pattern in patterns:
+            updated = re.sub(rf"^\s*{pattern}\s*(?::|[-–])?\s*", "", text, flags=re.I)
+            if updated != text:
+                text = updated
+                changed = True
+    return text
+
+
 def _safe(value: Any) -> str:
     if not _present(value):
         return NOT_EXPLICITLY_STATED
@@ -181,7 +204,7 @@ def _dedupe_keep_order(values: list[Any]) -> list[str]:
     return out
 
 
-DANGLING_TERMINAL_WORDS = {"and", "or", "with", "including", "using", "by", "for", "to", "the", "a", "an", "are", "is"}
+DANGLING_TERMINAL_WORDS = {"and", "or", "with", "including", "using", "by", "for", "to", "the", "a", "an", "are", "is", "data", "evidence", "plan"}
 TERMINAL_PUNCTUATION_RE = re.compile(r"[.!?;:。]$")
 
 
@@ -204,7 +227,7 @@ def normalise_punctuation(text: Any) -> str:
 def _remove_dangling_terminal_words(text: str) -> str:
     cleaned = normalise_punctuation(text).rstrip(" ,;:-")
     while cleaned:
-        match = re.search(r"\b(and|or|with|including|using|by|for|to|the|a|an|are|is)\.?$", cleaned, flags=re.I)
+        match = re.search(r"\b(and|or|with|including|using|by|for|to|the|a|an|are|is|data|evidence|plan)\.?$", cleaned, flags=re.I)
         if not match:
             break
         cleaned = cleaned[:match.start()].rstrip(" ,;:-")
@@ -289,6 +312,8 @@ def _normalise_currency_spacing(text: str) -> str:
 
 
 def _remove_repeated_comma_terms(text: str) -> str:
+    if ";" in str(text or "") or "." in str(text or ""):
+        return str(text or "").strip()
     parts = [p.strip() for p in re.split(r",|;", text) if p.strip()]
     if len(parts) <= 1:
         return str(text or "").strip()
@@ -302,6 +327,8 @@ def _remove_repeated_comma_terms(text: str) -> str:
             seen.add(key)
             deduped.append(part)
 
+    if len(deduped) == len(parts):
+        return str(text or "").strip()
     if len(deduped) == 1:
         return deduped[0]
 
@@ -343,12 +370,13 @@ def clean_display_value(value: Any, max_chars: int = 180) -> str:
 
     text = re.sub(r"\s+", " ", text)
     text = _remove_label_prefix(text, SUMMARY_VALUE_LABELS)
-    text = re.sub(r"£\s*(\d{1,3})\s*/\s*(\d{3})\b", r"£\1,\2", text)
+    text = _normalise_currency_spacing(text)
     text = re.sub(r"^(First|Second|Third|Finally),\s+", "", text, flags=re.I)
     text = text.replace(" will be randomised 2:1 to intervent", "")
     text = text.replace(" to intervent", "")
     text = re.sub(r"\brehabilitation,\s*rehabilitation\b", "rehabilitation", text, flags=re.I)
     text = _remove_repeated_comma_terms(text)
+    text = _normalise_currency_spacing(text)
 
     if text.lower() in {"second", "some"}:
         return NOT_EXPLICITLY_STATED
@@ -648,6 +676,21 @@ def _dashboard_groups(dashboard: list[dict] | None) -> dict[str, list[str]]:
     return group_dashboard_by_rag(dashboard)
 
 
+def _format_trl(facts: ApplicationFacts) -> str:
+    current = clean_display_value(_get(facts, "current_trl_or_stage"), max_chars=80)
+    target = clean_display_value(_get(facts, "target_trl_or_stage"), max_chars=80)
+    current_match = re.search(r"\bTRL\s*(\d(?:[-–]\d)?)\b", current, re.I)
+    target_match = re.search(r"\bTRL\s*(\d(?:[-–]\d)?)\b", target, re.I)
+    if current_match and target_match:
+        return f"TRL {current_match.group(1)} to TRL {target_match.group(1)}"
+
+    evidence = clean_display_value(_get(facts, "trl_evidence"), max_chars=120)
+    matches = re.findall(r"\bTRL\s*(\d(?:[-–]\d)?)\b", evidence, re.I)
+    if len(matches) >= 2:
+        return f"TRL {matches[0]} to TRL {matches[1]}"
+    return evidence
+
+
 # ---------------------------------------------------------------------
 # Main Summary tab
 # ---------------------------------------------------------------------
@@ -673,8 +716,8 @@ def render_main_case_summary(
 
     study_design = _compress(_get(facts, "study_design"), "design") or _safe(_get(facts, "study_design"))
     sample_size = _safe(_get(facts, "sample_size"))
-    comparator = _safe(_remove_label_prefix(_get(facts, "comparator_or_control"), ("comparator or control", "comparator", "control")))
-    trl = _safe(_get(facts, "trl_evidence"))
+    comparator = _safe(_clean_comparator(_get(facts, "comparator_or_control")))
+    trl = _format_trl(facts)
     duration = _safe(_get(facts, "duration_months"))
     duration_text = f"{duration} months" if duration.isdigit() else duration
     milestones = _dedupe_keep_order(_get(facts, "milestones", []) or [])
@@ -685,8 +728,8 @@ def render_main_case_summary(
     endpoints = _concise_outcome_list(_get(facts, "endpoints", []) or [])
     endpoints_text = _join_as_sentence(endpoints) if endpoints else NOT_EXPLICITLY_STATED
 
-    regulatory = clean_summary_evidence(_get(facts, "regulatory_plan"), max_words=32)
-    health_econ = clean_summary_evidence(_get(facts, "health_economics_plan"), max_words=32)
+    regulatory = clean_summary_evidence(_get(facts, "regulatory_plan"), max_words=32, area="regulatory")
+    health_econ = clean_summary_evidence(_get(facts, "health_economics_plan"), max_words=32, area="health_economics")
     ppie = clean_table_evidence(_get(facts, "ppie_plan"), max_words=35)
     ppie_lead = clean_table_evidence(_get(facts, "ppie_leadership_evidence"), max_words=25)
     if ppie != NOT_EXPLICITLY_STATED and ppie_lead != NOT_EXPLICITLY_STATED and _normalise_evidence_key(ppie) == _normalise_evidence_key(ppie_lead):
@@ -1144,7 +1187,7 @@ def render_executive_review_note(
         f"- **Timeline:** {timeline}",
         f"- **Strongest areas:** {strongest}",
         f"- **Areas needing attention:** {attention}",
-        f"- **Finance position:** {sentence_or_missing(_get(facts, 'finance_or_budget_evidence'))}",
+        f"- **Finance position:** {sentence_or_missing(clean_display_value(_get(facts, 'finance_or_budget_evidence'), max_chars=220))}",
         f"- **RSS adviser should check first:** {sentence_or_missing(clean_display_value(first_action, max_chars=220))}",
     ]
 
@@ -1198,9 +1241,39 @@ def clean_table_evidence(
     return cleaned
 
 
-def clean_summary_evidence(value: Any, max_words: int = 35) -> str:
-    """Clean summary evidence with the same adviser-facing safeguards as table evidence."""
-    return clean_table_evidence(value, max_words=max_words)
+def clean_summary_evidence(value: Any, max_words: int = 35, area: str = "") -> str:
+    """Clean summary evidence into concise, complete adviser-facing snippets."""
+    cleaned = clean_table_evidence(value, max_words=999)
+    if cleaned == NOT_EXPLICITLY_STATED:
+        return cleaned
+
+    fragments = [part.strip(" .;:") for part in re.split(r"[.;]\s+", cleaned) if part.strip(" .;:")]
+    if not fragments:
+        return cleaned
+
+    kept: list[str] = []
+    starts: set[str] = set()
+    for fragment in fragments:
+        if area in {"regulatory", "health_economics"}:
+            fragment = re.sub(r"^(?:To integrate [^,.;]+,\s*)", "", fragment, flags=re.I)
+        fragment = _remove_dangling_terminal_words(fragment)
+        if not fragment or len(fragment.split()) < 3:
+            continue
+        start = " ".join(fragment.lower().split()[:2])
+        if start in starts:
+            continue
+        starts.add(start)
+        kept.append(fragment)
+        if len(kept) >= 2:
+            break
+
+    if not kept:
+        return cleaned
+
+    summary = "; ".join(kept) if len(kept) > 1 else kept[0]
+    if area in {"regulatory", "health_economics"}:
+        summary = re.sub(r"^(?:To integrate [^,.;]+,\s*)", "", summary, flags=re.I)
+    return clean_table_evidence(summary, max_words=max_words)
 
 
 def _normalise_evidence_key(value: Any) -> str:

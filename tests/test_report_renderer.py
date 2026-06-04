@@ -191,3 +191,81 @@ def test_summary_deduplicates_identical_ppie_and_leadership_evidence() -> None:
 
     assert "PPIE evidence:** Not explicitly stated" in output
     assert "PPIE leadership evidence:** public contributors shaped recruitment materials" in output
+
+
+def test_comparator_prefix_and_currency_spacing_are_cleaned_in_summary_and_executive_note() -> None:
+    facts = ApplicationFacts(
+        comparator_or_control="The comparator is usual NHS wound assessment",
+        finance_or_budget_evidence="Budget and Finance: Total request is £984, 760 with partner cost of £22, 600.",
+    )
+
+    summary = render_main_case_summary(facts, dashboard=[])
+    executive = render_executive_review_note(facts, dashboard=[])
+    combined = summary + "\n" + executive
+
+    assert "Comparator/control:** usual NHS wound assessment" in summary
+    assert "Comparator/control:** The comparator is" not in summary
+    assert "£984,760" in combined
+    assert "£22,600" in combined
+    assert clean_display_value("Total budget £1, 250, 000") == "Total budget £1,250,000"
+    assert "£984, 760" not in combined
+    assert "£22, 600" not in combined
+
+
+def test_summary_never_renders_one_work_packages() -> None:
+    facts = ApplicationFacts(project_management_plan="1 work package, milestones and risk register")
+
+    output = render_main_case_summary(facts, dashboard=[])
+
+    assert "1 work package" in output
+    assert "1 work packages" not in output
+
+
+def test_uncertain_work_package_count_renders_work_packages_present() -> None:
+    facts = ApplicationFacts(project_management_plan="work packages present, milestones and risk register")
+
+    output = render_main_case_summary(facts, dashboard=[])
+
+    assert "work packages present" in output
+    assert "1 work packages" not in output
+
+
+def test_summary_trl_current_and_target_render_as_range() -> None:
+    facts = ApplicationFacts(
+        current_trl_or_stage="TRL 5",
+        target_trl_or_stage="TRL 7",
+        trl_evidence="TRL 5, TRL 7",
+    )
+
+    output = render_main_case_summary(facts, dashboard=[])
+
+    assert "Development stage:** TRL 5 to TRL 7" in output
+    assert "Development stage:** TRL 5, TRL 7" not in output
+
+
+def test_health_economics_evidence_does_not_end_as_vague_resource_use_data_fragment() -> None:
+    facts = ApplicationFacts(
+        health_economics_plan="Resource use data. Resource use data will support the health economic modelling."
+    )
+
+    output = render_main_case_summary(facts, dashboard=[])
+
+    assert "Health economics evidence:** Resource use data." not in output
+    assert "Resource use data will support the health economic modelling" in output
+
+
+def test_regulatory_evidence_is_concise_and_not_duplicated() -> None:
+    facts = ApplicationFacts(
+        regulatory_plan=(
+            "Integration will follow IEC 62304, ISO 14971 and ISO 13485, with UKCA-related "
+            "technical documentation and risk management. To integrate MQAE, integration will follow "
+            "IEC 62304, ISO 14971 and ISO 13485, with UKCA-related technical documentation and risk management."
+        )
+    )
+
+    output = render_main_case_summary(facts, dashboard=[])
+    regulatory_line = re.search(r"Regulatory/adoption evidence:\*\* (.*)", output).group(1)
+
+    assert "Integration will follow IEC 62304, ISO 14971 and ISO 13485" in regulatory_line
+    assert regulatory_line.lower().count("integration will follow") == 1
+    assert "To integrate" not in regulatory_line
