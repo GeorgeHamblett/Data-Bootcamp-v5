@@ -52,8 +52,11 @@ def clean_markdown_output(markdown: str) -> str:
 
     text = "\n".join(cleaned_lines)
 
-    # Remove accidental large blank sections.
+    # Remove accidental large blank sections and adviser-facing ellipses/double punctuation.
     text = re.sub(r"\n{3,}", "\n\n", text)
+    text = text.replace("…", ".")
+    text = re.sub(r"\.{2,}", ".", text)
+    text = re.sub(r"。+\.", "。", text)
 
     return text.strip()
 
@@ -178,14 +181,101 @@ def _dedupe_keep_order(values: list[Any]) -> list[str]:
     return out
 
 
-def _sentence_safe_trim(value: Any, max_chars: int = 180) -> str:
-    text = str(value or "").strip()
+DANGLING_TERMINAL_WORDS = {"and", "or", "with", "a", "an", "the", "including"}
+TERMINAL_PUNCTUATION_RE = re.compile(r"[.!?;:。]$")
+
+
+def normalise_punctuation(text: Any) -> str:
+    """Normalise adviser-facing punctuation without introducing ellipses."""
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        return ""
+
+    cleaned = cleaned.replace("…", ".")
+    cleaned = re.sub(r"\.{2,}", ".", cleaned)
+    cleaned = re.sub(r"。+\.", "。", cleaned)
+    cleaned = re.sub(r"([!?;:])\1+", r"\1", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    cleaned = re.sub(r"\s+([,.;:!?])", r"\1", cleaned)
+    return cleaned
+
+
+def _remove_dangling_terminal_words(text: str) -> str:
+    cleaned = normalise_punctuation(text).rstrip(" ,;:-")
+    while cleaned:
+        match = re.search(r"\b(and|or|with|a|an|the|including)\.?$", cleaned, flags=re.I)
+        if not match:
+            break
+        cleaned = cleaned[:match.start()].rstrip(" ,;:-")
+    return cleaned
+
+
+def ensure_single_terminal_punctuation(text: Any) -> str:
+    """Return a complete-looking phrase/sentence with one terminal punctuation mark."""
+    cleaned = _remove_dangling_terminal_words(str(text or ""))
+    if not cleaned:
+        return ""
+    if cleaned == NOT_EXPLICITLY_STATED:
+        return NOT_EXPLICITLY_STATED
+    cleaned = normalise_punctuation(cleaned).rstrip(" ,;:-")
+    cleaned = re.sub(r"([.!?。])[.;:]+$", r"\1", cleaned)
+    if TERMINAL_PUNCTUATION_RE.search(cleaned):
+        return cleaned
+    return f"{cleaned}."
+
+
+def sentence_safe_trim(value: Any, max_chars: int = 180) -> str:
+    """Trim text at a safe boundary and never return an ellipsis or dangling word."""
+    text = normalise_punctuation(value)
+    if not text:
+        return ""
+    if text == NOT_EXPLICITLY_STATED:
+        return NOT_EXPLICITLY_STATED
 
     if len(text) <= max_chars:
-        return text
+        return _remove_dangling_terminal_words(text)
 
-    cut = text[:max_chars].rsplit(" ", 1)[0].strip()
-    return cut.rstrip(" ,;:") + "…"
+    window = text[:max_chars].rstrip()
+
+    # Prefer a complete sentence, then a semicolon, then a comma/phrase boundary.
+    boundary_positions: list[int] = []
+    for pattern in [r"[.!?。](?=\s|$)", r";(?=\s|$)", r",(?=\s|$)"]:
+        matches = list(re.finditer(pattern, window))
+        if matches:
+            boundary_positions.extend(m.end() for m in matches if m.end() >= max(40, int(max_chars * 0.45)))
+        if boundary_positions:
+            break
+
+    if boundary_positions:
+        cut = window[:max(boundary_positions)].strip()
+    else:
+        cut = window.rsplit(" ", 1)[0].strip() if " " in window else window.strip()
+
+    cut = _remove_dangling_terminal_words(cut)
+    return ensure_single_terminal_punctuation(cut)
+
+
+def render_field_value(value: Any, max_chars: int = 180) -> str:
+    """Clean and safely trim a summary field value for adviser-facing output."""
+    if not _present(value):
+        return NOT_EXPLICITLY_STATED
+    if isinstance(value, list):
+        value = ", ".join(str(v) for v in value if _present(v))
+    return sentence_safe_trim(value, max_chars=max_chars) or NOT_EXPLICITLY_STATED
+
+
+def sentence_or_missing(value: Any) -> str:
+    """Render a complete sentence, including a complete missing-value sentence."""
+    if not _present(value):
+        return f"{NOT_EXPLICITLY_STATED}."
+    if str(value).strip() == NOT_EXPLICITLY_STATED:
+        return f"{NOT_EXPLICITLY_STATED}."
+    return ensure_single_terminal_punctuation(value)
+
+
+def _sentence_safe_trim(value: Any, max_chars: int = 180) -> str:
+    """Backward-compatible alias for older tests/imports."""
+    return sentence_safe_trim(value, max_chars=max_chars)
 
 
 def _remove_repeated_comma_terms(text: str) -> str:
@@ -229,7 +319,7 @@ def clean_display_value(value: Any, max_chars: int = 180) -> str:
     if text.lower() in {"second", "some", "adherence", "recruitment", "retention", "fidelity"}:
         return NOT_EXPLICITLY_STATED
 
-    return _sentence_safe_trim(text, max_chars=max_chars)
+    return sentence_safe_trim(text, max_chars=max_chars)
 
 
 def _compress(value: Any, kind: str = "generic") -> str:
@@ -324,6 +414,20 @@ def _compress(value: Any, kind: str = "generic") -> str:
         text = text.replace("this project will test", "testing")
 
     return clean_display_value(text)
+
+
+
+
+def _join_as_sentence(values: list[str], prefix: str = "") -> str:
+    cleaned = [clean_display_value(value, max_chars=120).rstrip(" .") for value in values if _present(value)]
+    cleaned = [value for value in cleaned if value and value != NOT_EXPLICITLY_STATED]
+    if not cleaned:
+        return NOT_EXPLICITLY_STATED
+    if len(cleaned) == 1:
+        body = cleaned[0]
+    else:
+        body = ", ".join(cleaned[:-1]) + " and " + cleaned[-1]
+    return ensure_single_terminal_punctuation(f"{prefix}{body}" if prefix else body)
 
 
 def _lines(values: list[Any]) -> str:
@@ -470,7 +574,7 @@ def render_main_case_summary(
         duration_text = f"{duration_text} (latest extracted milestone: {month_milestones[-1]})"
 
     endpoints = _dedupe_keep_order(_get(facts, "endpoints", []) or [])[:10]
-    endpoints_text = ", ".join(endpoints) if endpoints else NOT_EXPLICITLY_STATED
+    endpoints_text = _join_as_sentence(endpoints) if endpoints else NOT_EXPLICITLY_STATED
 
     regulatory = clean_table_evidence(_get(facts, "regulatory_plan"), max_words=45)
     health_econ = clean_table_evidence(_get(facts, "health_economics_plan"), max_words=45)
@@ -896,14 +1000,43 @@ def render_executive_review_note(
         "Review the detailed checklist table.",
     )
 
+    product = render_field_value(_get(facts, "product_or_intervention"), max_chars=100)
+    population = _compress(_get(facts, "target_population"), "population") or render_field_value(
+        _get(facts, "target_population"), max_chars=140
+    )
+    if _present(_get(facts, "product_or_intervention")) and _present(_get(facts, "target_population")):
+        focus = ensure_single_terminal_punctuation(f"{product.rstrip(' .')} for {population.rstrip(' .')}")
+    else:
+        focus = sentence_or_missing(product if _present(product) else population)
+
+    design = _compress(_get(facts, "study_design"), "design") or render_field_value(_get(facts, "study_design"), max_chars=180)
+    sample_size = render_field_value(_get(facts, "sample_size"), max_chars=120)
+    if _present(_get(facts, "study_design")) and _present(_get(facts, "sample_size")):
+        evidence_generation = ensure_single_terminal_punctuation(f"{design.rstrip(' .')} with {sample_size.rstrip(' .')}")
+    elif _present(_get(facts, "study_design")):
+        evidence_generation = sentence_or_missing(design)
+    else:
+        evidence_generation = sentence_or_missing(sample_size)
+
+    duration = render_field_value(_get(facts, "duration_months"), max_chars=80)
+    if str(duration).isdigit():
+        timeline = f"{duration} months."
+    elif _present(_get(facts, "duration_months")):
+        timeline = sentence_or_missing(duration)
+    else:
+        timeline = sentence_or_missing(NOT_EXPLICITLY_STATED)
+
+    strongest = sentence_or_missing(", ".join(groups["GREEN"][:3]) if groups["GREEN"] else "None identified from available evidence.")
+    attention = sentence_or_missing(", ".join((groups["RED"] + groups["AMBER"])[:4]) if groups["RED"] or groups["AMBER"] else "None identified from available evidence.")
+
     bullets = [
-        f"- **Application focus:** {_safe(_get(facts, 'product_or_intervention'))} for {_compress(_get(facts, 'target_population'), 'population') or _safe(_get(facts, 'target_population'))}.",
-        f"- **Evidence generation:** {_compress(_get(facts, 'study_design'), 'design') or _safe(_get(facts, 'study_design'))} with {_safe(_get(facts, 'sample_size'))}.",
-        f"- **Timeline:** {_safe(_get(facts, 'duration_months'))} months.",
-        f"- **Strongest areas:** {', '.join(groups['GREEN'][:3]) if groups['GREEN'] else 'None identified from available evidence.'}.",
-        f"- **Areas needing attention:** {', '.join((groups['RED'] + groups['AMBER'])[:4]) if groups['RED'] or groups['AMBER'] else 'None identified from available evidence.'}.",
-        f"- **Finance position:** {_safe(_get(facts, 'finance_or_budget_evidence'))}.",
-        f"- **RSS adviser should check first:** {clean_display_value(first_action, max_chars=220)}.",
+        f"- **Application focus:** {focus}",
+        f"- **Evidence generation:** {evidence_generation}",
+        f"- **Timeline:** {timeline}",
+        f"- **Strongest areas:** {strongest}",
+        f"- **Areas needing attention:** {attention}",
+        f"- **Finance position:** {sentence_or_missing(_get(facts, 'finance_or_budget_evidence'))}",
+        f"- **RSS adviser should check first:** {sentence_or_missing(clean_display_value(first_action, max_chars=220))}",
     ]
 
     return clean_markdown_output("## Executive review note\n\n" + "\n".join(bullets[:8]))
@@ -948,7 +1081,8 @@ def clean_table_evidence(
 
     words = cleaned.split()
     if len(words) > max_words:
-        cleaned = " ".join(words[:max_words]).rstrip(" ,;:") + "…"
+        approx_chars = max(80, max_words * 8)
+        cleaned = sentence_safe_trim(cleaned, max_chars=approx_chars)
 
     return cleaned
 
@@ -1105,9 +1239,14 @@ __all__ = (
     "clean_display_value",
     "clean_table_evidence",
     "dashboard_table_rows",
+    "ensure_single_terminal_punctuation",
+    "normalise_punctuation",
+    "render_field_value",
     "group_dashboard_by_rag",
     "raw_json_payload",
     "render_summary",
+    "sentence_or_missing",
+    "sentence_safe_trim",
     "similarity_table_rows",
     *EXPECTED_RENDERER_FUNCTIONS,
 )
