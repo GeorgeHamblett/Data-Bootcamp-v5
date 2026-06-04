@@ -101,3 +101,131 @@ def test_summary_and_executive_note_have_clean_complete_lines() -> None:
     assert "with Not explicitly stated" not in combined
     assert re.search(r"Timeline:\*\* Not explicitly stated\.", executive)
     _assert_no_dangling_line_end(combined)
+
+
+def test_summary_strips_duplicate_labels_from_values() -> None:
+    facts = ApplicationFacts(
+        study_design="Research design: prospective, multi-site feasibility study",
+        comparator_or_control="Comparator or control: usual care",
+        health_economics_plan="Health economics: EQ-5D-5L, resource use and QALY analysis",
+    )
+
+    output = render_main_case_summary(facts, dashboard=[])
+
+    assert "Design:** Research design:" not in output
+    assert "Comparator/control:** Comparator or control:" not in output
+    assert "Health economics evidence:** Health economics:" not in output
+    assert "Design:** prospective, multi-site feasibility study" in output
+    assert "Comparator/control:** usual care" in output
+
+
+def test_woubot_outcomes_render_concise_not_repeated_endpoint_sentences() -> None:
+    facts = ApplicationFacts(
+        endpoints=[
+            "Primary endpoint: prediction of delayed wound healing by 30 days.",
+            "Secondary endpoints include wound area change, time to healing, referrals, nurse documentation time, usability, EQ-5D-5L and safety.",
+            "The primary endpoint is prediction of delayed wound healing by 30 days and secondary endpoints include wound area change, time to healing, referrals, usability, EQ-5D-5L and safety.",
+        ]
+    )
+
+    output = render_main_case_summary(facts, dashboard=[])
+
+    assert "Main outcomes:** prediction of delayed wound healing by 30 days, wound area change, time to healing, referrals, nurse documentation time, usability, EQ-5D-5L and safety." in output
+    assert "The primary endpoint is" not in output
+    assert "endpoint" not in re.search(r"Main outcomes:\*\* (.*)", output).group(1).lower()
+
+
+def test_summary_setting_is_rendered_once_without_explanatory_sentence() -> None:
+    facts = ApplicationFacts(sites_or_setting="NHS community wound services")
+
+    output = render_main_case_summary(facts, dashboard=[])
+
+    assert "Setting:** NHS community wound services" in output
+    assert "The setting is" not in output
+    assert output.count("Setting:**") == 1
+
+
+def test_missing_setting_renders_not_explicitly_stated_once() -> None:
+    output = render_main_case_summary(ApplicationFacts(), dashboard=[])
+
+    assert "Setting:** Not explicitly stated" in output
+    assert "The setting is" not in output
+    assert output.count("Setting:**") == 1
+
+
+def test_project_management_evidence_does_not_end_with_are() -> None:
+    facts = ApplicationFacts(project_management_plan="30-month plan, seven work packages, Gantt-style timeline, milestones, go/no-go criteria, operational meetings, project board, steering group and risk register are.")
+
+    output = render_main_case_summary(facts, dashboard=[])
+
+    assert "risk register are." not in output
+    assert "risk register" in output
+    _assert_no_dangling_line_end(output)
+
+
+def test_synthetic_wording_is_not_rendered_as_ppie_evidence() -> None:
+    facts = ApplicationFacts(ppie_plan="The proposal is intentionally near-overlapping to test novelty and similarity detection. PPIE evidence: public contributors shaped it.")
+
+    output = render_main_case_summary(facts, dashboard=[])
+
+    assert "PPIE evidence:** Not explicitly stated" in output
+    assert "intentionally near-overlapping" not in output
+
+
+def test_project_management_never_says_one_work_packages() -> None:
+    facts = ApplicationFacts(
+        duration_months="30",
+        project_management_plan="30-month plan, 1 work packages, Gantt-style timeline and risk register",
+    )
+
+    output = render_main_case_summary(facts, dashboard=[])
+
+    assert "1 work packages" not in output
+    assert "1 work package" in output
+
+
+def test_currency_output_has_no_space_after_currency_commas() -> None:
+    facts = ApplicationFacts(
+        health_economics_plan="Health economics: ICER £22, 600 per QALY and budget impact £984, 760 over five years.",
+        finance_or_budget_evidence="Budget and Finance: total grant requested £984, 760.",
+    )
+
+    output = render_main_case_summary(facts, dashboard=[])
+
+    assert "£22, 600" not in output
+    assert "£984, 760" not in output
+    assert "£22,600" in output
+    assert "£984,760" in output
+
+
+def test_comparator_output_strips_the_comparator_is_prefix() -> None:
+    facts = ApplicationFacts(comparator_or_control="The comparator is usual NHS wound assessment")
+
+    output = render_main_case_summary(facts, dashboard=[])
+
+    assert "Comparator/control:** The comparator is" not in output
+    assert "Comparator/control:** usual NHS wound assessment" in output
+
+
+def test_regulatory_evidence_deduplicates_repeated_phrases() -> None:
+    facts = ApplicationFacts(
+        regulatory_plan="Regulatory plan: UKCA classification, technical documentation, technical documentation, risk management. UKCA classification, technical documentation, risk management. A third sentence should not be needed."
+    )
+
+    output = render_main_case_summary(facts, dashboard=[])
+    line = next(line for line in output.splitlines() if "Regulatory/adoption evidence" in line)
+
+    assert line.lower().count("technical documentation") == 1
+    assert "A third sentence" not in line
+
+
+def test_ppie_and_ppie_leadership_identical_renders_ppie_missing() -> None:
+    facts = ApplicationFacts(
+        ppie_plan="Named PPIE lead will coordinate public contributor advisory group.",
+        ppie_leadership_evidence="Named PPIE lead will coordinate public contributor advisory group.",
+    )
+
+    output = render_main_case_summary(facts, dashboard=[])
+
+    assert "PPIE evidence:** Not explicitly stated" in output
+    assert "PPIE leadership evidence:** Named PPIE lead will coordinate public contributor advisory group" in output
