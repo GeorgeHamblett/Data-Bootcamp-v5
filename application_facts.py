@@ -23,6 +23,11 @@ NOISE_PATTERNS = [
 
 PRODUCT_STOPWORDS = {"the", "a", "an", "it", "this", "we"}
 DISCLAIMER_RE = re.compile(r"\b(?:fictional|invented|training only|synthetic exemplar|dummy)\b", re.I)
+SYNTHETIC_EVIDENCE_RE = re.compile(
+    r"synthetic proposal|high-similarity test|intentionally near-overlapping|"
+    r"test novelty and similarity detection|fictional|dummy|training use only|exemplar",
+    re.I,
+)
 
 FIELD_PATTERNS = {
     "product_or_intervention": [r"(?:intervention\s*/\s*product|product\s*/\s*intervention|product|intervention|innovation|service|device|software|programme|program|model|method)\s*[:\-]\s*(.+)"],
@@ -82,7 +87,7 @@ def _clean_text(text: str) -> str:
     return cleaned
 
 
-DANGLING_TERMINAL_WORDS_RE = re.compile(r"\b(and|or|with|a|an|the|including)\.?$", re.I)
+DANGLING_TERMINAL_WORDS_RE = re.compile(r"\b(and|or|with|including|using|by|for|to|the|a|an|are|is)\.?$", re.I)
 
 
 def _remove_dangling_terminal_words(value: str) -> str:
@@ -116,7 +121,7 @@ def _find_first(text: str, patterns: list[str]) -> tuple[str, str] | None:
 
 
 def _is_noise(value: str) -> bool:
-    return any(re.search(p, value, re.I) for p in NOISE_PATTERNS)
+    return bool(SYNTHETIC_EVIDENCE_RE.search(value or "")) or any(re.search(p, value, re.I) for p in NOISE_PATTERNS)
 
 
 def _is_disclaimer(value: str) -> bool:
@@ -180,12 +185,23 @@ def _first_acronym(text: str, product: str | None = None) -> str | None:
             return match.group(1)
 
     component_context = re.compile(
-        r"\b(?:product|intervention|engine|component|module|platform|system|device|software|tool)\b",
+        r"\b(?:product|intervention|method|engine|component|module|platform|system|device|software|algorithm|model|tool)\b",
+        re.I,
+    )
+    named_component_acronym = re.compile(
+        r"\b(?:[A-Za-z][A-Za-z0-9-]+\s+){1,8}"
+        r"(?:component|method|engine|module|platform|intervention|algorithm|model|tool)\s*"
+        r"\(([A-Z][A-Z0-9-]{2,10})\)"
+        r"(?:\s+(?:module|engine|component|platform|algorithm|model|tool|system))?",
         re.I,
     )
     for sentence in _sentences(text):
         if not component_context.search(sentence):
             continue
+        for match in named_component_acronym.finditer(sentence):
+            candidate = match.group(1).strip().upper()
+            if not _is_generic_acronym(candidate):
+                return candidate
         for pattern in ACRONYM_PATTERNS:
             for match in re.finditer(pattern, sentence):
                 candidate = match.group(1).strip().upper()
@@ -354,6 +370,8 @@ def _extract_technology_type(text: str) -> str | None:
 def _extract_weighted_plan(text: str, patterns: list[str], weaker: list[str] | None = None, max_items: int = 4) -> str | None:
     scored: list[tuple[int, str]] = []
     for sentence in _sentences(text):
+        if _is_noise(sentence):
+            continue
         hits = sum(1 for p in patterns if re.search(p, sentence, re.I))
         if not hits:
             continue
@@ -490,12 +508,41 @@ def _extract_milestones(text: str) -> list[str]:
 
 GENERIC_OUTCOME_LABELS = {"endpoint", "endpoints", "primary endpoint", "secondary endpoint", "outcome", "outcomes", "primary outcome", "secondary outcome"}
 
+OUTCOME_CANONICAL_PATTERNS = [
+    (r"prediction of delayed wound healing by 30 days", "prediction of delayed wound healing by 30 days"),
+    (r"wound area change", "wound area change"),
+    (r"time to healing", "time to healing"),
+    (r"referrals?", "referrals"),
+    (r"nurse documentation time", "nurse documentation time"),
+    (r"usability", "usability"),
+    (r"recruitment", "recruitment"),
+    (r"retention", "retention"),
+    (r"adherence", "adherence"),
+    (r"fidelity", "fidelity"),
+    (r"EQ-5D-5L", "EQ-5D-5L"),
+    (r"safety", "safety"),
+    (r"Berg Balance Scale", "Berg Balance Scale"),
+    (r"Timed Up and Go", "Timed Up and Go"),
+    (r"Activities-specific Balance Confidence(?: scale)?", "Activities-specific Balance Confidence scale"),
+    (r"SUS", "SUS"),
+    (r"PSSUQ", "PSSUQ"),
+    (r"interviews?", "interviews"),
+]
+
 
 def _clean_outcome_candidate(value: str) -> str:
     cleaned = _short(value, 220)
     cleaned = re.sub(r"^(?:primary|secondary)\s+(?:endpoint|outcome)s?\s*[:\-]\s*", "", cleaned, flags=re.I)
-    cleaned = re.sub(r"^(?:endpoint|outcome)s?\s*(?:include|are|:|-)\s*", "", cleaned, flags=re.I)
+    cleaned = re.sub(r"^(?:endpoint|outcome)s?\s*(?:include|includes|are|:|-)\s*", "", cleaned, flags=re.I)
     return _short(cleaned, 220)
+
+
+def _outcome_measures_in_text(value: str) -> list[str]:
+    measures: list[str] = []
+    for pattern, label in OUTCOME_CANONICAL_PATTERNS:
+        if re.search(rf"\b{pattern}\b", value, re.I) and label.lower() not in [m.lower() for m in measures]:
+            measures.append(label)
+    return measures
 
 
 def _extract_endpoints(text: str) -> list[str]:
@@ -511,17 +558,50 @@ def _extract_endpoints(text: str) -> list[str]:
             seen.add(key)
             endpoints.append(cleaned)
 
-    for match in ENDPOINT_RE.finditer(text):
-        add(match.group(0))
+    for sentence in _sentences_with(text, [r"endpoint", r"outcome measure", r"primary outcome", r"secondary outcome", r"primary endpoint", r"secondary endpoint", r"outcomes? include"], 12, 300):
+        for measure in _outcome_measures_in_text(sentence):
+            add(measure)
 
-    for sentence in _sentences_with(text, [r"endpoint", r"outcome measure", r"primary outcome", r"secondary outcome", r"primary endpoint", r"secondary endpoint"], 8, 220):
-        cleaned = _clean_outcome_candidate(sentence)
-        if cleaned.lower().strip(" .;:") in GENERIC_OUTCOME_LABELS:
-            continue
-        # Prefer enumerated measures over bare labels, but keep meaningful complete phrases.
-        if re.search(r"\b(?:Berg Balance Scale|Timed Up and Go|EQ-5D-5L|EQ-5D|wound area change|time to healing|referrals|usability|safety|prediction of delayed wound healing by 30 days)\b", cleaned, re.I):
-            add(cleaned)
-    return endpoints[:20]
+    for match in ENDPOINT_RE.finditer(text):
+        for measure in _outcome_measures_in_text(match.group(0)) or [match.group(0)]:
+            add(measure)
+
+    return endpoints[:12]
+
+
+def _extract_project_management_plan(text: str, duration_months: str, work_packages: list[str], milestones: list[str]) -> str | None:
+    if not re.search(r"project management|work packages?|Gantt|milestones?|go/no-go|steering group|risk register|project board", text, re.I):
+        return None
+    bits: list[str] = []
+    if duration_months != NOT_EXPLICITLY_STATED:
+        bits.append(f"{duration_months}-month plan")
+    wp_count = len(work_packages)
+    explicit_wp_count = re.search(r"\b(seven|7)\s+work packages?\b", text, re.I)
+    if explicit_wp_count:
+        bits.append("seven work packages")
+    elif wp_count:
+        bits.append(f"{wp_count} work packages")
+    elif re.search(r"work packages?", text, re.I):
+        bits.append("work packages")
+    if re.search(r"Gantt(?:-style)?|timeline", text, re.I):
+        bits.append("Gantt-style timeline")
+    if milestones or re.search(r"milestones?", text, re.I):
+        bits.append("milestones")
+    if re.search(r"go/no-go|go no go", text, re.I):
+        bits.append("go/no-go criteria")
+    if re.search(r"operational meetings?", text, re.I):
+        bits.append("operational meetings")
+    if re.search(r"project board", text, re.I):
+        bits.append("project board")
+    if re.search(r"steering group", text, re.I):
+        bits.append("steering group")
+    if re.search(r"risk register", text, re.I):
+        bits.append("risk register")
+    deduped=[]
+    for bit in bits:
+        if bit.lower() not in [b.lower() for b in deduped]:
+            deduped.append(bit)
+    return _short(", ".join(deduped), 260) if deduped else None
 
 def _extract_market_or_impact(text: str) -> str | None:
     patterns = [r"market and adoption", r"IP and commercialisation", r"knowledge mobilisation", r"dissemination and impact", r"commissioner", r"commercialisation"]
@@ -552,6 +632,8 @@ def _actual_budget_sentence(text: str) -> str | None:
     ppie_only = [r"PPIE? payment", r"PPIE? costs", r"public contributor", r"expenses"]
     candidates: list[tuple[int, str]] = []
     for sentence in _sentences(text):
+        if _is_noise(sentence):
+            continue
         if re.search(r"\bno\s+(?:real\s+)?budget|budget[^.]{0,40}(?:not|isn['’]?t|not provided)|no budget spreadsheet", sentence, re.I):
             continue
         hits = sum(1 for p in strong_budget if re.search(p, sentence, re.I))
@@ -780,7 +862,7 @@ def extract_application_facts(documents: Iterable[LoadedDocument]) -> Applicatio
     for field, patterns in fallback_map.items():
         if getattr(facts, field) == NOT_EXPLICITLY_STATED:
             sentence = _sentence_with(combined, patterns)
-            if sentence and not (field == "market_or_impact_evidence" and _is_disclaimer(sentence)):
+            if sentence and not _is_noise(sentence) and not (field == "market_or_impact_evidence" and _is_disclaimer(sentence)):
                 setattr(facts, field, sentence)
                 _add_evidence(evidence_entries, field, sentence, docs)
 
@@ -796,18 +878,9 @@ def extract_application_facts(documents: Iterable[LoadedDocument]) -> Applicatio
             facts.health_economics_plan = comparator
 
     if facts.project_management_plan == NOT_EXPLICITLY_STATED:
-        pm_bits = []
-        if facts.duration_months != NOT_EXPLICITLY_STATED:
-            pm_bits.append(f"{facts.duration_months}-month plan")
-        if facts.work_packages:
-            pm_bits.append("work packages/Gantt rows present")
-        if facts.milestones:
-            pm_bits.append("milestones present")
-        risk = _sentence_with(combined, [r"risk register", r"contingenc", r"governance"])
-        if risk:
-            pm_bits.append(risk)
-        if pm_bits:
-            facts.project_management_plan = "; ".join(pm_bits)
+        pm_plan = _extract_project_management_plan(combined, facts.duration_months, facts.work_packages, facts.milestones)
+        if pm_plan:
+            facts.project_management_plan = pm_plan
 
     budget = _actual_budget_sentence(combined)
     if budget:

@@ -181,7 +181,7 @@ def _dedupe_keep_order(values: list[Any]) -> list[str]:
     return out
 
 
-DANGLING_TERMINAL_WORDS = {"and", "or", "with", "a", "an", "the", "including"}
+DANGLING_TERMINAL_WORDS = {"and", "or", "with", "including", "using", "by", "for", "to", "the", "a", "an", "are", "is"}
 TERMINAL_PUNCTUATION_RE = re.compile(r"[.!?;:。]$")
 
 
@@ -204,7 +204,7 @@ def normalise_punctuation(text: Any) -> str:
 def _remove_dangling_terminal_words(text: str) -> str:
     cleaned = normalise_punctuation(text).rstrip(" ,;:-")
     while cleaned:
-        match = re.search(r"\b(and|or|with|a|an|the|including)\.?$", cleaned, flags=re.I)
+        match = re.search(r"\b(and|or|with|including|using|by|for|to|the|a|an|are|is)\.?$", cleaned, flags=re.I)
         if not match:
             break
         cleaned = cleaned[:match.start()].rstrip(" ,;:-")
@@ -280,7 +280,7 @@ def _sentence_safe_trim(value: Any, max_chars: int = 180) -> str:
 
 
 def _remove_repeated_comma_terms(text: str) -> str:
-    parts = [p.strip() for p in re.split(r",|/|;", text) if p.strip()]
+    parts = [p.strip() for p in re.split(r",|;", text) if p.strip()]
     if len(parts) <= 1:
         return text
 
@@ -296,9 +296,26 @@ def _remove_repeated_comma_terms(text: str) -> str:
     if len(deduped) == 1:
         return deduped[0]
 
-    separator = " / " if "/" in text else ", "
-    return separator.join(deduped)
+    return ", ".join(deduped)
 
+
+SUMMARY_VALUE_LABELS = (
+    "Research design",
+    "Study design",
+    "Comparator or control",
+    "Comparator",
+    "Health economics",
+    "Regulatory plan",
+    "Project management",
+    "Budget and Finance",
+    "Finance evidence",
+)
+
+SYNTHETIC_EVIDENCE_RE = re.compile(
+    r"synthetic proposal|high-similarity test|intentionally near-overlapping|"
+    r"test novelty and similarity detection|fictional|dummy|training use only|exemplar",
+    re.I,
+)
 
 def clean_display_value(value: Any, max_chars: int = 180) -> str:
     """Clean a value for adviser-facing Markdown display."""
@@ -309,15 +326,19 @@ def clean_display_value(value: Any, max_chars: int = 180) -> str:
         value = ", ".join(str(v) for v in value if _present(v))
 
     text = str(value).strip()
+    if SYNTHETIC_EVIDENCE_RE.search(text):
+        return NOT_EXPLICITLY_STATED
 
     text = re.sub(r"\s+", " ", text)
+    text = _remove_label_prefix(text, SUMMARY_VALUE_LABELS)
+    text = re.sub(r"£\s*(\d{1,3})\s*/\s*(\d{3})\b", r"£\1,\2", text)
     text = re.sub(r"^(First|Second|Third|Finally),\s+", "", text, flags=re.I)
     text = text.replace(" will be randomised 2:1 to intervent", "")
     text = text.replace(" to intervent", "")
     text = re.sub(r"\brehabilitation,\s*rehabilitation\b", "rehabilitation", text, flags=re.I)
     text = _remove_repeated_comma_terms(text)
 
-    if text.lower() in {"second", "some", "adherence", "recruitment", "retention", "fidelity"}:
+    if text.lower() in {"second", "some"}:
         return NOT_EXPLICITLY_STATED
 
     return sentence_safe_trim(text, max_chars=max_chars)
@@ -436,6 +457,62 @@ def _compress(value: Any, kind: str = "generic") -> str:
     return clean_display_value(text)
 
 
+
+
+GENERIC_OUTCOME_LABELS = {"endpoint", "endpoints", "primary endpoint", "secondary endpoint", "outcome", "outcomes", "primary outcome", "secondary outcome"}
+OUTCOME_CANONICAL_PATTERNS = [
+    (r"prediction of delayed wound healing by 30 days", "prediction of delayed wound healing by 30 days"),
+    (r"wound area change", "wound area change"),
+    (r"time to healing", "time to healing"),
+    (r"referrals?", "referrals"),
+    (r"nurse documentation time", "nurse documentation time"),
+    (r"usability", "usability"),
+    (r"recruitment", "recruitment"),
+    (r"retention", "retention"),
+    (r"adherence", "adherence"),
+    (r"fidelity", "fidelity"),
+    (r"EQ-5D-5L", "EQ-5D-5L"),
+    (r"safety", "safety"),
+    (r"Berg Balance Scale", "Berg Balance Scale"),
+    (r"Timed Up and Go", "Timed Up and Go"),
+    (r"Activities-specific Balance Confidence(?: scale)?", "Activities-specific Balance Confidence scale"),
+    (r"SUS", "SUS"),
+    (r"PSSUQ", "PSSUQ"),
+    (r"interviews?", "interviews"),
+]
+
+
+def _concise_outcome_list(values: list[Any], limit: int = 12) -> list[str]:
+    outcomes: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str) -> None:
+        text = clean_display_value(value, max_chars=120).rstrip(" .;:")
+        key = text.lower().strip(" .;:")
+        if not key or key == NOT_EXPLICITLY_STATED.lower() or key in GENERIC_OUTCOME_LABELS:
+            return
+        if key not in seen:
+            seen.add(key)
+            outcomes.append(text)
+
+    for raw in values:
+        if not _present(raw):
+            continue
+        text = str(raw)
+        found = []
+        for pattern, label in OUTCOME_CANONICAL_PATTERNS:
+            if re.search(rf"\b{pattern}\b", text, re.I):
+                found.append(label)
+        if found:
+            for label in found:
+                add(label)
+        else:
+            cleaned = re.sub(r"^(?:primary|secondary)\s+(?:endpoint|outcome)s?\s*[:\-]\s*", "", text, flags=re.I)
+            cleaned = re.sub(r"^(?:endpoint|outcome)s?\s*(?:include|includes|are|:|-)\s*", "", cleaned, flags=re.I)
+            add(cleaned)
+        if len(outcomes) >= limit:
+            break
+    return outcomes[:limit]
 
 
 def _join_as_sentence(values: list[str], prefix: str = "") -> str:
@@ -584,7 +661,7 @@ def render_main_case_summary(
 
     study_design = _compress(_get(facts, "study_design"), "design") or _safe(_get(facts, "study_design"))
     sample_size = _safe(_get(facts, "sample_size"))
-    comparator = _safe(_remove_label_prefix(_get(facts, "comparator_or_control"), ("comparator", "control")))
+    comparator = _safe(_remove_label_prefix(_get(facts, "comparator_or_control"), ("comparator or control", "comparator", "control")))
     trl = _safe(_get(facts, "trl_evidence"))
     duration = _safe(_get(facts, "duration_months"))
     duration_text = f"{duration} months" if duration.isdigit() else duration
@@ -593,12 +670,7 @@ def render_main_case_summary(
     if month_milestones:
         duration_text = f"{duration_text} (latest extracted milestone: {month_milestones[-1]})"
 
-    generic_outcomes = {"endpoint", "endpoints", "primary endpoint", "secondary endpoint", "outcome", "outcomes", "primary outcome", "secondary outcome"}
-    endpoints = [
-        outcome
-        for outcome in _dedupe_keep_order(_get(facts, "endpoints", []) or [])
-        if outcome.lower().strip(" .;:") not in generic_outcomes
-    ][:10]
+    endpoints = _concise_outcome_list(_get(facts, "endpoints", []) or [])
     endpoints_text = _join_as_sentence(endpoints) if endpoints else NOT_EXPLICITLY_STATED
 
     regulatory = clean_table_evidence(_get(facts, "regulatory_plan"), max_words=45)
@@ -625,8 +697,6 @@ def render_main_case_summary(
     - **Target population:** {target_population}
     - **Clinical or care need:** {clinical_need}
     - **Setting:** {setting}
-
-    The setting is {setting}.
 
     The summary is based on the runtime application and supporting documents only. Built-in NIHR/RSS guidance is used as checklist guidance, not as application evidence.
 
@@ -1085,6 +1155,8 @@ def clean_table_evidence(
         text = str(value or "").strip()
 
     if not _present(text):
+        return NOT_EXPLICITLY_STATED
+    if SYNTHETIC_EVIDENCE_RE.search(text):
         return NOT_EXPLICITLY_STATED
 
     portal_noise = re.compile(
