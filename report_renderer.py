@@ -195,6 +195,7 @@ def normalise_punctuation(text: Any) -> str:
     cleaned = re.sub(r"\.{2,}", ".", cleaned)
     cleaned = re.sub(r"。+\.", "。", cleaned)
     cleaned = re.sub(r"([!?;:])\1+", r"\1", cleaned)
+    cleaned = re.sub(r"([.!?])([.;:])+", r"\1", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     cleaned = re.sub(r"\s+([,.;:!?])", r"\1", cleaned)
     return cleaned
@@ -321,6 +322,25 @@ def clean_display_value(value: Any, max_chars: int = 180) -> str:
 
     return sentence_safe_trim(text, max_chars=max_chars)
 
+
+
+
+def _valid_summary_project_title(value: Any) -> str:
+    text = clean_display_value(value, max_chars=140)
+    stripped = text.strip(" .;:")
+    if not _present(stripped):
+        return NOT_EXPLICITLY_STATED
+    if re.match(r"^(?:Month|WP\s*\d*|Work package|Milestone|Output|Appendix|Gantt)\b", stripped, re.I):
+        return NOT_EXPLICITLY_STATED
+    if re.search(r"governance confirmed|final analysis|commercial plan|\bcomplete\b|dissemination|work package|month start|month end", stripped, re.I):
+        return NOT_EXPLICITLY_STATED
+    if re.search(r"SYNTHETIC|TRAINING|DUMMY|FICTIONAL|EXEMPLAR|HIGH-SIMILARITY TEST", stripped, re.I):
+        return NOT_EXPLICITLY_STATED
+    if re.match(r"^(?:Summary|Background|Project management|Gantt(?:/workplan)?|Workplan|Endpoints?)$", stripped, re.I):
+        return NOT_EXPLICITLY_STATED
+    if re.match(r"^(?:This project will|The project will|This proposal|We will)\b", stripped, re.I):
+        return NOT_EXPLICITLY_STATED
+    return text
 
 def _compress(value: Any, kind: str = "generic") -> str:
     """Compress extracted raw text into concise adviser-facing phrases."""
@@ -550,7 +570,7 @@ def render_main_case_summary(
         priority_gaps: str = "",
 ) -> str:
     """Render the main adviser-facing case summary as Markdown."""
-    project_title = _get(facts, "project_title", NOT_EXPLICITLY_STATED)
+    project_title = _valid_summary_project_title(_get(facts, "project_title", NOT_EXPLICITLY_STATED))
     claimed_call = _get(facts, "application_claimed_call", NOT_EXPLICITLY_STATED)
     product = _get(facts, "product_or_intervention", NOT_EXPLICITLY_STATED)
     acronym = _get(facts, "acronym_or_short_name", NOT_EXPLICITLY_STATED)
@@ -573,7 +593,12 @@ def render_main_case_summary(
     if month_milestones:
         duration_text = f"{duration_text} (latest extracted milestone: {month_milestones[-1]})"
 
-    endpoints = _dedupe_keep_order(_get(facts, "endpoints", []) or [])[:10]
+    generic_outcomes = {"endpoint", "endpoints", "primary endpoint", "secondary endpoint", "outcome", "outcomes", "primary outcome", "secondary outcome"}
+    endpoints = [
+        outcome
+        for outcome in _dedupe_keep_order(_get(facts, "endpoints", []) or [])
+        if outcome.lower().strip(" .;:") not in generic_outcomes
+    ][:10]
     endpoints_text = _join_as_sentence(endpoints) if endpoints else NOT_EXPLICITLY_STATED
 
     regulatory = clean_table_evidence(_get(facts, "regulatory_plan"), max_words=45)

@@ -61,3 +61,43 @@ def test_executive_review_note_uses_conditional_missing_wording() -> None:
     assert "..." not in output
     assert "…" not in output
     _assert_no_dangling_line_end(output)
+
+
+def test_main_case_summary_filters_generic_endpoint_and_milestone_title() -> None:
+    facts = ApplicationFacts(
+        project_title="Month 2: Project governance confirmed",
+        product_or_intervention="Digital intervention",
+        endpoints=["endpoint", "primary endpoint", "wound area change"],
+    )
+
+    output = render_main_case_summary(facts, dashboard=[])
+
+    assert "Project title:** Not explicitly stated" in output
+    assert "Project title:** Month 2: Project governance confirmed" not in output
+    assert "Main outcomes:** wound area change" in output
+    assert "Main outcomes:** endpoint" not in output
+
+
+def test_summary_and_executive_note_have_clean_complete_lines() -> None:
+    facts = ApplicationFacts(
+        project_title="A clean project title",
+        product_or_intervention="Digital intervention...",
+        target_population="adults with chronic wounds and",
+        study_design="A feasibility study..",
+        sample_size="Not explicitly stated",
+        duration_months="Not explicitly stated",
+        finance_or_budget_evidence="None identified from available evidence..",
+        endpoints=["usability...", "safety…"],
+    )
+
+    summary = render_main_case_summary(facts, dashboard=[])
+    executive = render_executive_review_note(facts, dashboard=[])
+    combined = summary + "\n" + executive
+
+    assert "..." not in combined
+    assert "…" not in combined
+    assert ".." not in combined
+    assert "Not explicitly stated months" not in combined
+    assert "with Not explicitly stated" not in combined
+    assert re.search(r"Timeline:\*\* Not explicitly stated\.", executive)
+    _assert_no_dangling_line_end(combined)
