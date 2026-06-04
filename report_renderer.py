@@ -279,10 +279,19 @@ def _sentence_safe_trim(value: Any, max_chars: int = 180) -> str:
     return sentence_safe_trim(value, max_chars=max_chars)
 
 
+def _normalise_currency_spacing(text: str) -> str:
+    cleaned = str(text or "")
+    cleaned = re.sub(r"£\s*(\d{1,3})\s*/\s*(\d{3})\b", r"£\1,\2", cleaned)
+    # Remove spaces after thousands separators inside currency amounts only.
+    while re.search(r"£\d{1,3}(?:,\d{3})*,\s+\d{3}\b", cleaned):
+        cleaned = re.sub(r"(£\d{1,3}(?:,\d{3})*),\s+(\d{3}\b)", r"\1,\2", cleaned)
+    return cleaned
+
+
 def _remove_repeated_comma_terms(text: str) -> str:
     parts = [p.strip() for p in re.split(r",|;", text) if p.strip()]
     if len(parts) <= 1:
-        return text
+        return normalised
 
     deduped: list[str] = []
     seen: set[str] = set()
@@ -673,10 +682,12 @@ def render_main_case_summary(
     endpoints = _concise_outcome_list(_get(facts, "endpoints", []) or [])
     endpoints_text = _join_as_sentence(endpoints) if endpoints else NOT_EXPLICITLY_STATED
 
-    regulatory = clean_table_evidence(_get(facts, "regulatory_plan"), max_words=45)
-    health_econ = clean_table_evidence(_get(facts, "health_economics_plan"), max_words=45)
+    regulatory = clean_summary_evidence(_get(facts, "regulatory_plan"), max_words=32)
+    health_econ = clean_summary_evidence(_get(facts, "health_economics_plan"), max_words=32)
     ppie = clean_table_evidence(_get(facts, "ppie_plan"), max_words=35)
     ppie_lead = clean_table_evidence(_get(facts, "ppie_leadership_evidence"), max_words=25)
+    if ppie != NOT_EXPLICITLY_STATED and ppie_lead != NOT_EXPLICITLY_STATED and _normalise_evidence_key(ppie) == _normalise_evidence_key(ppie_lead):
+        ppie = NOT_EXPLICITLY_STATED
     inclusion = clean_table_evidence(_get(facts, "research_inclusion_plan"), max_words=35)
     project_management = clean_table_evidence(_get(facts, "project_management_plan"), max_words=35)
     finance = clean_table_evidence(_get(facts, "finance_or_budget_evidence"), max_words=40)
