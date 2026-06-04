@@ -1,6 +1,6 @@
 import re
 
-from report_renderer import render_executive_review_note, render_main_case_summary
+from report_renderer import clean_display_value, render_executive_review_note, render_main_case_summary
 from schemas import ApplicationFacts
 
 
@@ -170,3 +170,12 @@ def test_synthetic_wording_is_not_rendered_as_ppie_evidence() -> None:
 
     assert "PPIE evidence:** Not explicitly stated" in output
     assert "intentionally near-overlapping" not in output
+
+
+def test_clean_display_value_handles_values_without_repeated_comma_terms() -> None:
+    assert clean_display_value("Review the detailed checklist table") == "Review the detailed checklist table"
+    assert clean_display_value("usual care") == "usual care"
+
+
+def test_clean_display_value_dedupes_repeated_comma_terms() -> None:
+    assert clean_display_value("rehabilitation, rehabilitation") == "rehabilitation"

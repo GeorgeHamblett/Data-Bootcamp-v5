@@ -291,7 +291,7 @@ def _normalise_currency_spacing(text: str) -> str:
 def _remove_repeated_comma_terms(text: str) -> str:
     parts = [p.strip() for p in re.split(r",|;", text) if p.strip()]
     if len(parts) <= 1:
-        return normalised
+        return str(text or "").strip()
 
     deduped: list[str] = []
     seen: set[str] = set()
@@ -1193,6 +1193,11 @@ def clean_table_evidence(
         cleaned = sentence_safe_trim(cleaned, max_chars=approx_chars)
 
     return cleaned
+
+
+def clean_summary_evidence(value: Any, max_words: int = 35) -> str:
+    """Clean summary evidence with the same adviser-facing safeguards as table evidence."""
+    return clean_table_evidence(value, max_words=max_words)
 
 
 def checklist_table_rows(items: list[ChecklistItem]) -> list[dict[str, Any]]:
