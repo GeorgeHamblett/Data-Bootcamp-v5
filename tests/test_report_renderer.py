@@ -179,3 +179,15 @@ def test_clean_display_value_handles_values_without_repeated_comma_terms() -> No
 
 def test_clean_display_value_dedupes_repeated_comma_terms() -> None:
     assert clean_display_value("rehabilitation, rehabilitation") == "rehabilitation"
+
+
+def test_summary_deduplicates_identical_ppie_and_leadership_evidence() -> None:
+    facts = ApplicationFacts(
+        ppie_plan="PPIE evidence: public contributors shaped recruitment materials.",
+        ppie_leadership_evidence="public contributors shaped recruitment materials",
+    )
+
+    output = render_main_case_summary(facts, dashboard=[])
+
+    assert "PPIE evidence:** Not explicitly stated" in output
+    assert "PPIE leadership evidence:** public contributors shaped recruitment materials" in output
