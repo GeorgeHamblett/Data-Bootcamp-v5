@@ -87,7 +87,7 @@ def _clean_text(text: str) -> str:
     return cleaned
 
 
-DANGLING_TERMINAL_WORDS_RE = re.compile(r"\b(and|or|with|including|using|by|for|to|the|a|an|are|is)\.?$", re.I)
+DANGLING_TERMINAL_WORDS_RE = re.compile(r"\b(and|or|with|including|using|by|for|to|the|a|an|are|is|data|evidence|plan)\.?$", re.I)
 
 
 def _remove_dangling_terminal_words(value: str) -> str:
@@ -185,12 +185,12 @@ def _first_acronym(text: str, product: str | None = None) -> str | None:
             return match.group(1)
 
     component_context = re.compile(
-        r"\b(?:product|intervention|method|engine|component|module|platform|system|device|software|algorithm|model|tool)\b",
+        r"\b(?:product|intervention|method|engine|assessment\s+engine|component|module|platform|system|device|software|algorithm|model|tool)\b",
         re.I,
     )
     named_component_acronym = re.compile(
-        r"\b(?:[A-Za-z][A-Za-z0-9-]+\s+){1,8}"
-        r"(?:component|method|engine|module|platform|intervention|algorithm|model|tool)\s*"
+        r"\b(?:[A-Za-z][A-Za-z0-9-]+\s+){0,10}"
+        r"(?:assessment\s+engine|component|method|engine|module|platform|intervention|algorithm|model|tool|system)\s*"
         r"\(([A-Z][A-Z0-9-]{2,10})\)"
         r"(?:\s+(?:module|engine|component|platform|algorithm|model|tool|system))?",
         re.I,
@@ -382,7 +382,7 @@ def _extract_weighted_plan(text: str, patterns: list[str], weaker: list[str] | N
         scored.append((score, _short(sentence, 400)))
     if not scored:
         return None
-    scored.sort(key=lambda x: (-x[0], len(x[1])))
+    scored.sort(key=lambda x: (-x[0], -len(x[1])))
     out=[]
     for _, sentence in scored:
         if sentence not in out:
@@ -445,10 +445,14 @@ def _extract_trl(text: str) -> tuple[str, str, str, list[str]]:
     if current or target:
         cur = f"TRL {current.group(1).replace(' ', '')}" if current else NOT_EXPLICITLY_STATED
         tar = f"TRL {target.group(1).replace(' ', '')}" if target else NOT_EXPLICITLY_STATED
-        return cur, tar, "; ".join(x for x in [cur, tar] if x != NOT_EXPLICITLY_STATED), []
+        evidence = f"{cur} to {tar}" if cur != NOT_EXPLICITLY_STATED and tar != NOT_EXPLICITLY_STATED else "; ".join(x for x in [cur, tar] if x != NOT_EXPLICITLY_STATED)
+        return cur, tar, evidence, []
     trls = re.findall(r"TRL\s*\d\s*(?:[-–]\s*\d)?", text, re.I)
     if trls:
-        return _short(trls[0]), _short(trls[1]) if len(trls) > 1 else NOT_EXPLICITLY_STATED, "; ".join(trls[:3]), []
+        cur = _short(trls[0])
+        tar = _short(trls[1]) if len(trls) > 1 else NOT_EXPLICITLY_STATED
+        evidence = f"{cur} to {tar}" if tar != NOT_EXPLICITLY_STATED else cur
+        return cur, tar, evidence, []
     return NOT_EXPLICITLY_STATED, NOT_EXPLICITLY_STATED, NOT_EXPLICITLY_STATED, []
 
 
@@ -578,11 +582,11 @@ def _extract_project_management_plan(text: str, duration_months: str, work_packa
     wp_count = len(work_packages)
     explicit_wp_count = re.search(r"\b(seven|7)\s+work packages?\b", text, re.I)
     if explicit_wp_count:
-        bits.append("seven work packages")
+        bits.append("7 work packages")
     elif wp_count:
-        bits.append(f"{wp_count} work packages")
+        bits.append(f"{wp_count} work package" if wp_count == 1 else f"{wp_count} work packages")
     elif re.search(r"work packages?", text, re.I):
-        bits.append("work packages")
+        bits.append("work packages present")
     if re.search(r"Gantt(?:-style)?|timeline", text, re.I):
         bits.append("Gantt-style timeline")
     if milestones or re.search(r"milestones?", text, re.I):
