@@ -77,12 +77,22 @@ def _clean_text(text: str) -> str:
     return cleaned
 
 
+DANGLING_TERMINAL_WORDS_RE = re.compile(r"\b(and|or|with|a|an|the|including)\.?$", re.I)
+
+
+def _remove_dangling_terminal_words(value: str) -> str:
+    cleaned = re.sub(r"\.{2,}|…", ".", value or "").strip(" .;:\n\t,/-")
+    while cleaned and DANGLING_TERMINAL_WORDS_RE.search(cleaned):
+        cleaned = DANGLING_TERMINAL_WORDS_RE.sub("", cleaned).strip(" .;:\n\t,/-")
+    return cleaned
+
+
 def _short(value: str, limit: int = 260) -> str:
     cleaned = re.sub(r"\s+", " ", value).strip(" .;:\n\t")
     if len(cleaned) <= limit:
-        return cleaned
+        return _remove_dangling_terminal_words(cleaned)
     truncated = cleaned[:limit].rsplit(" ", 1)[0].strip(" .;:\n\t")
-    return truncated or cleaned[:limit].rstrip()
+    return _remove_dangling_terminal_words(truncated or cleaned[:limit].rstrip())
 
 
 def _sentences(text: str) -> list[str]:
@@ -516,19 +526,58 @@ def _add_evidence(evidence: list[dict[str, str]], field: str, quote: str, docs: 
     evidence.append({"source_document": source, "section_or_context": field, "quote": _short(quote, 220), "why_it_matters": f"Supports {field.replace('_', ' ')}."})
 
 
+def _is_narrative_title_candidate(candidate: str) -> bool:
+    return bool(
+        re.match(
+            r"(?i)^(this|the|our)\s+project\b|^we\s+will\b|^this\s+(?:application|proposal)\b|^to\s+(?:test|develop|evaluate)\b",
+            candidate,
+        )
+    )
+
+
+def _valid_labelled_project_title(candidate: str) -> bool:
+    """Accept clear labelled titles while rejecting narrative descriptions."""
+    cleaned = _short(candidate, 160).strip(" \"'“”")
+    words = cleaned.split()
+    return bool(
+        cleaned
+        and not _is_noise(cleaned)
+        and 2 <= len(words) <= 20
+        and len(cleaned) <= 160
+        and not _is_narrative_title_candidate(cleaned)
+        and not re.search(r"(?i)funding call|lead applicant|partners? include|sample size|target population|study design|duration|abstract|summary", cleaned)
+    )
+
+
+def _looks_like_project_title(candidate: str) -> bool:
+    """Return True for generic title-like leading lines, not narrative sentences."""
+    cleaned = _short(candidate, 140).strip(" \"'“”")
+    if not cleaned or _is_noise(cleaned):
+        return False
+    words = cleaned.split()
+    if not 3 <= len(words) <= 18 or len(cleaned) > 140:
+        return False
+    if cleaned.endswith(('.', '?', '!')):
+        return False
+    if _is_narrative_title_candidate(cleaned):
+        return False
+    if re.search(r"(?i)funding call|lead applicant|partners? include|sample size|target population|study design|duration|abstract|summary", cleaned):
+        return False
+    if re.search(r"\s[:–-]\s", cleaned):
+        return True
+    titlecase_words = sum(1 for word in words if re.match(r"[A-Z][A-Za-z0-9-]+$", word))
+    has_acronym = any(re.match(r"[A-Z0-9-]{3,}$", word.strip("():")) for word in words)
+    return has_acronym or titlecase_words >= max(2, len(words) // 2)
+
+
 def _fallback_project_title(text: str) -> str | None:
     explicit = _find_first(text, FIELD_PATTERNS["project_title"])
-    if explicit:
+    if explicit and _valid_labelled_project_title(explicit[0]):
         return explicit[0]
     for line in text.splitlines()[:20]:
-        candidate = _short(line, 180)
-        if _is_noise(candidate) or len(candidate.split()) < 3:
-            continue
-        if re.search(r"StepRight|movement quality assessment|falls rehabilitation", candidate, re.I) and not re.search(r"funding call|lead applicant|partners include", candidate, re.I):
-            return re.sub(r"^title\s*[:\-]\s*", "", candidate, flags=re.I).strip()
-    match = re.search(r"\b(StepRight\s*[:\-]\s*[^.\n]{8,160}|StepRight\s+movement quality assessment[^.\n]{0,140})", text, re.I)
-    if match:
-        return _short(match.group(1), 180)
+        candidate = re.sub(r"^title\s*[:\-]\s*", "", _short(line, 140), flags=re.I).strip()
+        if _looks_like_project_title(candidate):
+            return candidate
     return None
 
 
@@ -575,6 +624,8 @@ def extract_application_facts(documents: Iterable[LoadedDocument]) -> Applicatio
         found = _find_first(combined, patterns)
         if found:
             value, quote = found
+            if field == "project_title" and not _valid_labelled_project_title(value):
+                continue
             setattr(facts, field, value)
             _add_evidence(evidence_entries, field, quote, docs)
 
